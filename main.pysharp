@@ -1,0 +1,8 @@
+include stdlib
+
+std::print("NWord pass shop!!!")
+g = std::fetch("How many: ")
+
+for i to std::int(g){
+	std::printf("NWord Pass Count:", i)
+}

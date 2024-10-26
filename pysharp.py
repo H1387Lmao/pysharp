@@ -1,269 +1,489 @@
+import ply.lex as lex
+import ply.yacc as yacc
+import argparse
 import os
 import sys
-import argparse
+import random
+import math
 
-TT_INT     = "INT"
-TT_STRING  = "STRING"
-TT_IDENTIF = "IDENTIFIER"
-TT_PLUS    = "PLUS"
-TT_MINUS   = "MINUS"
-TT_MUL     = "MUL"
-TT_DIV     = "DIV"
-TT_LPAREN  = "LPAREN"
-TT_RPAREN  = "RPAREN"
+# Argument parsing
+argParser = argparse.ArgumentParser()
+argParser.add_argument("-in", "--input", "--source", "-s", required=True, help="Input source file")
+argParser.add_argument("--debug-mode", action="store_true", help="Enable debug mode")
 
-TT_EQUALS  = "EQUALS"
+args = argParser.parse_args()
+debug_mode = args.debug_mode
 
-TT_EOF     = "EOF"
+# Check if the input file exists
+if os.path.isfile(args.input):
+    source_file = args.input
+else:
+    raise SyntaxError("File source does not exist!")
 
-class Position:
-    def __init__(self, lineno, position, text, tokens=[]):
-        self.tokens = tokens
-        self.text = text
-        self.position = position
-        self.lineno = lineno
+# Define tokens
+tokens = [
+    "INT", "IDENTIFIER", "PL", "SU", "MU", "DV", "LP", "RP", "EQ", "ISEQ", "OB", "CB", "COMMA", "STRING", "DQ"
+]
 
-    def advance(self):
-        if self.position+1 < len(self.text):
-            self.position = self.position+1 
-            return
-        self.position = None
+keywords = {
+    "if": "IF",
+    "execute": "PYTHON",
+    "for": "FOR",
+    "else": "ELSE",
+    "to": "TO",
+    "include": "INCLUDE",
+    "fn" : "FUNC",
+    "return" : "RETURN",
+}
 
-    def char(self):
-        char = self.text[self.position] if self.position!=None else self.position
-        return char
+tokens += keywords.values()
 
-    def token(self):
-        token = self.tokens[self.position] if self.position!=None else self.position
+# Define regular expressions for tokens
+t_PL = r'\+'
+t_OB = r'\{'
+t_CB = r'\}'
+t_SU = r'-'
+t_MU = r'\*'
+t_DV = r'/'
+t_LP = r'\('
+t_RP = r'\)'
+t_EQ = r'='
+t_COMMA = r","
+t_ISEQ = r'=='
+t_DQ = r'"'
 
-        return token
+def t_STRING(t):
+    r'"[^"]*"'
+    t.value = t.value[1:-1]  # Remove surrounding quotes
+    return t
 
-def display_error(error):
-    print("\n"+"\n".join(error))
+def t_IDENTIFIER(t):
+    r'[a-zA-Z_][a-zA-Z_:0-9]*'
+    if t.value in keywords:
+        t.type = keywords[t.value]  # Correctly set the type if it is a keyword
+    return t
 
-def point(msg, line, startpos, endpos):
-    if isinstance(startpos, Position):
-        startpos = startpos.position
-        endpos   = endpos.position
-    point_with_arrow = line + "\n"
+def t_INT(t):
+    r'\d+'
+    t.value = int(t.value)
+    return t
 
-    for idx, char in enumerate(line):
-        if idx >= startpos and idx <= endpos:
-            point_with_arrow += "~"
-        else:
-            if char == "\t":
-               point_with_arrow += " "*7
-            point_with_arrow += " "
-    return (msg, point_with_arrow)
+# Ignoring spaces, tabs, and newlines
+t_ignore = " \t"
 
-class Token:
-    def __init__(self, type, value=None, lineno=0):
-        self.type = type
+def t_NEWLINE(t):
+    r'\n+'
+    t.lexer.lineno += 1
+
+# Error handling for lexer
+def t_error(t):
+    print(f"Illegal character '{t.value[0]}' at line {t.lineno}")
+    t.lexer.skip(1)
+
+# Build lexer
+lexer = lex.lex()
+
+# AST Node Definitions
+class NumberNode:
+    def __init__(self, value):
         self.value = value
-        self.lineno = lineno
+    def __repr__(self):
+        return f"{self.value}"
+
+class ConditionNode:
+    def __init__(self, op, l, r):
+        self.op = op
+        self.l = l
+        self.r = r
+    def __repr__(self):
+        return f"CONDITION: ({self.l} {self.op} {self.r})"
+
+class ForLoopNode:
+    def __init__(self, identifier, range_, statements):
+        self.identifier = identifier
+        self.range = range_
+        self.statements = statements
 
     def __repr__(self):
-        return f"{self.type}:{self.value}" if self.value else self.type
+        return f"FOR {self.identifier} to {self.range} {{ {self.statements} }}"
 
-class Lexer:
-    def __init__(self, code):
-        self.code = code 
-        self.position = Position(1, -1, code)
-        self.symbols = "+-/*()="
+class IfStatementNode:
+    def __init__(self, condition, statements, elsestatements):
+        self.condition = condition
+        self.statements = statements
+        self.else_statements = elsestatements
 
-        self.alphanumerals = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
-        self.alphanumerals += self.alphanumerals.lower() + "0123456789"
+    def __repr__(self):
+        return f"IF {self.condition} {{ {self.statements} }}" if self.else_statements==None else f"IF {self.condition} {{ {self.statements} }} ELSE {{ {self.else_statements} }}"
 
-    def tokenize(self):
-        self.tokens = []
-        self.current_token = ""
-        self.current_line = ""
-        self.pos_rel_to_line = -1
+class ExecuteNode:
+    def __init__(self, value):
+        self.value = value
+    def __repr__(self):
+        return f"PRINT {self.value}"
 
-        while self.position.char():
-            self.position.advance()
-            char = self.position.char()
-            if char == None:
-                break 
-            self.current_line += char
-            self.pos_rel_to_line += 1
-            if char in " \t":
-                continue
-            if char == "\n":
-                self.position.lineno+=1
-                self.current_line = ""
-                self.pos_rel_to_line = -1
-                continue
+class IdentifierNode:
+    def __init__(self, name):
+        self.name = name
+    def __repr__(self):
+        return f"{self.name}"
 
-            if char in self.symbols:
-                if self.current_token:
-                    self.tokens.append(Token(self.get_type(), self.current_token, self.position.lineno))
-                    self.current_token = ""
+class IncludeNode:
+    def __init__(self, name):
+        self.name = name
+    def __repr__(self):
+        return f"INCLUDE: {self.name}"
 
-                if char == "+":
-                    self.tokens.append(Token(TT_PLUS, char, self.position.lineno))
-                elif char == "-":
-                    self.tokens.append(Token(TT_MINUS, char, self.position.lineno))
-                elif char == "*":
-                    self.tokens.append(Token(TT_MUL, char, self.position.lineno))
-                elif char == "/":
-                    self.tokens.append(Token(TT_DIV, char, self.position.lineno))
-                elif char == "(":
-                    self.tokens.append(Token(TT_LPAREN, char, self.position.lineno))
-                elif char == ")":
-                    self.tokens.append(Token(TT_RPAREN, char, self.position.lineno))
-                elif char == "=":
-                    self.tokens.append(Token(TT_EQUALS, char, self.position.lineno))
-            elif char in self.alphanumerals:
-                self.current_token += char
-            else:
-                return None, point(f"Invalid Character: '{char}', At line: {self.position.lineno}", self.current_line,self.pos_rel_to_line, self.pos_rel_to_line)
+class BinaryOp:
+    def __init__(self, op, l, r):
+        self.op = op
+        self.l = l
+        self.r = r
+    def __repr__(self):
+        return f"({self.l} {self.op} {self.r})"
 
-        if self.current_token:
-            self.tokens.append(Token(self.get_type(), self.current_token, self.position.lineno))
+class FunctionCallNode:
+    def __init__(self, function_name, arguments=None):
+        self.args = arguments
+        self.name = function_name
+    def __repr__(self):
+        return f"CALL: {self.name}, {self.args}"
 
-        self.tokens.append(Token(TT_EOF, "EOF", self.position.lineno))
-        
-        return self.tokens, None
+class ArgumentsNode:
+    def __init__(self, arguments):
+        self.args = arguments
+    def __repr__(self):
+        return "NEEDS: "+",".join(map(str, self.args))
 
-    def get_type(self):
-        if self.current_token.isdigit():
-            return TT_INT
-        elif self.current_token[0] and self.current_token[-1] == "\"":
-            return TT_STRING
+class ReturnNode:
+    def __init__(self, arguments=None):
+        self.args = arguments
+    def __repr__(self):
+        if self.args:
+            if isinstance(self.args, (list, dict, tuple)):
+                return f"RETURN: "+",".join(self.args)
+            return f"RETURN {self.args}"
         else:
-            return TT_IDENTIF
+            return "RETURN"
 
-class ValueNode:
-    def __init__(self, tk, nodetype="Value", operation=None):
-        self.tk = tk
-        self.value=tk
-        self.op = operation
-        self.nodetype = nodetype
+class AssignNode:
+    def __init__(self, identifier, value):
+        self.identifier = identifier
+        self.value = value
     def __repr__(self):
-        return f"{self.nodetype}:{self.tk.value}"
+        return f"{self.identifier} := {self.value}"
 
-class BinOp:
-    def __init__(self, operation, left, right):
-        self.op = operation
-        self.left = left
-        self.right = right
-
+class FunctionNode:
+    def __init__(self, name, arguments, statements):
+        self.name = name
+        self.args = arguments
+        self.statements = statements
     def __repr__(self):
-        return f"({self.left} {self.op} {self.right})"
+        return f"FUNCTION: {self.name} {self.args} ( {self.statements} )"
 
-class Parser:
-    def __init__(self, tokens, code):
-        self.position = Position(0, -1, code, tokens)
-        self.current_token = None
-        self.advance()  # Initialize first token
-        self.code=code
+# Define precedence and associativity
+precedence = (
+    ('left', 'PL', 'SU'),
+    ('left', 'MU', 'DV'),
+)
 
-    def advance(self):
-        """Advances position and updates current token."""
-        self.position.advance()
-        self.current_token = self.position.token()
+# Grammar rules
 
-    def parse(self):
-        result, error = self.expr()
-        return result, error
 
-    def error(self, message):
-        line = self.code.split("\n")[self.position.lineno - 1] + "      "
+def p_statements(p):
+    '''
+    statements : statements statement
+               | statement
+    '''
+    if len(p) == 3:  # More than one statement
+        p[0] = p[1]  # Carry forward the previous statements
+        if not isinstance(p[0], list):
+            p[0] = [p[0]]  # Make it a list if it's a single statement
+        p[0].append(p[2])  # Append the current statement
+    else:  # Only one statement
+        p[0] = [p[1]]  # Start a new list of statements
 
-        startpos = self.position.position
-        endpos = startpos + 6
+def p_statement_return(p):
+    '''
+    statement : RETURN
+              | RETURN expr
+    '''
 
-        error_message, arrow = point(message, line, startpos, endpos)
-        return None, [error_message, arrow]
+    if len(p) == 2:
+        p[0] = ReturnNode()
+    else:
+        p[0] = ReturnNode(p[2])
 
-    def factor(self):
-        """Handles literals, identifiers, unary operators, and parentheses."""
-        token = self.current_token
+def p_statement_arguments(p):
+    '''
+    arguments : LP identifier_list RP
+    '''
 
-        if token.type in (TT_PLUS, TT_MINUS):
-            # Handle unary operations
-            op_token = token
-            self.advance()
-            factor, error = self.factor()
-            if error:
-                return None, error
-            return ValueNode(factor, "Unary", op_token), None
-        
-        elif token.type == TT_INT:
-            self.advance()
-            return ValueNode(token, "Int"), None
-        elif token.type == TT_STRING:
-            self.advance()
-            return ValueNode(token, "String"), None
-        elif token.type == TT_IDENTIF:
-            self.advance()
-            return ValueNode(token, "Indentifier"), None
-        elif token.type == TT_LPAREN:
-            # Handle expressions in parentheses
-            self.advance()
-            expr, error = self.expr()
-            if error:
-                return None, error
+    p[0] = ArgumentsNode(p[2])  # Create ArgumentsNode with the identifier list
 
-            if self.current_token.type != TT_RPAREN:
-                return self.error(f"Expected ')' at line {token.lineno}")
+def p_identifier_list(p):
+    '''
+    identifier_list : IDENTIFIER
+                    | identifier_list COMMA IDENTIFIER
+                    | expr
+                    | INT
+                    | STRING
+                    | identifier_list COMMA INT
+                    | identifier_list COMMA statement
+                    | identifier_list COMMA expr
+                    | identifier_list COMMA STRING
+                    | statement
+    '''
+    if len(p) == 2:
+        p[0] = [p[1]]
+    else:
+        p[0] = p[1] + [p[3]]
 
-            self.advance()  # Skip the closing parenthesis
-            return expr, None
+def p_statement_function(p):
+    '''
+    statement : FUNC IDENTIFIER arguments OB statements CB
+    '''
+    p[0] = FunctionNode(p[2], p[3], p[5])
+
+def p_statement_include(p):
+    '''
+    statement : INCLUDE IDENTIFIER
+    '''
+
+    p[0] = IncludeNode(p[2])
+
+def p_statement_if(p):
+    '''
+    statement : IF condition OB statements CB
+              | IF condition OB statements CB ELSE OB statements CB
+    '''
+    if len(p) == 6:
+        p[0] = IfStatementNode(p[2], p[4], None)
+    elif len(p) == 10:
+        p[0] = IfStatementNode(p[2], p[4], p[8])
+
+def p_statement_for(p):
+    '''
+    statement : FOR IDENTIFIER TO expr OB statements CB
+              | FOR IDENTIFIER TO statement OB statements CB
+    '''
+    p[0] = ForLoopNode(p[2], p[4], p[6])
+
+def p_statement_functioncall(p):
+    '''
+    statement : IDENTIFIER arguments
+              | IDENTIFIER LP RP
+    '''
+    if len(p)==4:
+        p[0] = FunctionCallNode(p[1])
+    else:
+        p[0] = FunctionCallNode(p[1], p[2])
+
+def p_statement_python(p):
+    '''
+    statement : PYTHON LP STRING RP
+    '''
+    p[0] = ExecuteNode(p[3])
+
+def p_statement_assign(p):
+    '''
+    statement : IDENTIFIER EQ expr
+              | IDENTIFIER EQ statement
+    '''
+    p[0] = AssignNode(IdentifierNode(p[1]), p[3])
+
+def p_condition(p):
+    '''
+    condition : expr ISEQ expr
+    '''
+    p[0] = ConditionNode(p[2], p[1], p[3])
+
+def p_expr(p):
+    '''
+    expr : expr PL expr
+         | expr SU expr
+         | expr MU expr
+         | expr DV expr
+         | LP expr RP
+         | INT
+         | IDENTIFIER
+         | STRING
+    '''
+    if len(p) == 2:
+        if isinstance(p[1], int):
+            p[0] = NumberNode(p[1])
         else:
-            return self.error(f"Expected value at line {token.lineno}")
+            p[0] = IdentifierNode(p[1])
+    elif len(p) == 4:
+        if p[1] == "(":
+            p[0] = p[2]
+        else:
+            p[0] = BinaryOp(p[2], p[1], p[3])
 
-    def term(self):
-        """Handles multiplication and division."""
-        left, error = self.factor()
-        if error:
-            return None, error
+# Error rule for parser
+def p_error(p):
+    if p:
+        print(f"Syntax error at '{p.value}' (line {p.lineno})")
+    else:
+        print("Syntax error at EOF")
 
-        while self.current_token.type in (TT_MUL, TT_DIV):
-            op_token = self.current_token
-            self.advance()
-
-            right, error = self.factor()
-            if error:
-                return None, error
-
-            left = BinOp(op_token, left, right)
+Variables = {
+    "GLOBALS": {
         
-        return left, None
+    }
+}
+initiated_functions = {
 
-    def expr(self):
-        """Handles addition and subtraction, including parentheses."""
-        left, error = self.term()
-        if error:
-            return None, error
+}
 
-        while self.current_token.type in (TT_PLUS, TT_MINUS):
-            op_token = self.current_token
-            self.advance()
+call_stack = []
 
-            right, error = self.term()
-            if error:
-                return None, error
+def execute(nodes):
+    for node in nodes:
+        execute_single_statement(node, variables=Variables["GLOBALS"])
 
-            left = BinOp(op_token, left, right)
+def execute_single_statement(node, variables):
+    if isinstance(node, BinaryOp):
+        left = execute_single_statement(node.l, variables)
+        right = execute_single_statement(node.r, variables)
+        op = node.op
+        if op == "+":
+            return left + right
+        elif op == "-":
+            return left - right
+        elif op == "*":
+            return left * right
+        elif op == "/":
+            if right == 0:
+                raise ZeroDivisionError("Division by zero")
+            return left / right
+    elif isinstance(node, FunctionNode):
+        function_name = node.name
 
-        return left, None
+        Variables[function_name] = {
+            
+        }
+        initiated_functions[function_name] = (node.args, node.statements)
+    elif isinstance(node, FunctionCallNode):
+        args_input = node.args
+        funct_name = node.name
 
-# Testing the parser
-code = "10 * (3 + 1)"
-lexer = Lexer(code)
+        if funct_name in initiated_functions:
+            arguments, statements = initiated_functions[funct_name]
+            if len(arguments.args) == len(args_input.args):
+                localvariables = Variables[funct_name]
+                for arg, argument in zip(args_input.args, arguments.args):
+                    if isinstance(arg, FunctionCallNode):
+                        localvariables[str(argument)] = execute_single_statement(arg, variables)
+                    else:
+                        if arg in variables:
+                            localvariables[str(argument)] = variables[str(arg)]
+                        else:
+                            localvariables[str(argument)] = arg
+                if debug_mode:
+                    print(f"RUNNING {funct_name}, {Variables}")
+                call_stack.append(funct_name)
+                for statement in statements:
+                    execute_single_statement(statement, localvariables)
+        return Variables["GLOBALS"].get(f"{funct_name} Return", None)
+    elif isinstance(node, IncludeNode):
+        source = source_file
 
-tokens, error = lexer.tokenize()
-if error:
-    display_error(error)
-    sys.exit()
+        source.removesuffix(".pysharp")
+        if node.name == source:
+            raise RuntimeError("Cannot include a module with the same name!")
+        else:
+            run(node.name+".pysharp")
+    elif isinstance(node, AssignNode):
+        identifier = node.identifier.name
+        value = execute_single_statement(node.value, variables)
+        variables[identifier] = value
+        return value
+    elif isinstance(node, ReturnNode):
+        args = node.args
+        func_parent = call_stack[-1]
+        Variables["GLOBALS"][f"{func_parent} Return"] = execute_single_statement(args, variables)
+    elif isinstance(node, ConditionNode):
+        left = execute_single_statement(node.l, variables)
+        right = execute_single_statement(node.r, variables)
+        op = node.op
+        return left == right
+    elif isinstance(node, IfStatementNode):
+        if execute_single_statement(node.condition, variables):
+            for statement in node.statements:
+                execute_single_statement(statement, variables)
+        else:
+            if node.else_statements:
+                for statement in node.else_statements:
+                    execute_single_statement(statement, variables)
+    elif isinstance(node, ForLoopNode):
+        identifier = node.identifier
+        range_ = execute_single_statement(node.range, variables)
+        statements = node.statements
+        
+        for identifier_count in range(1, range_ + 1):
+            variables[identifier] = identifier_count
+            for statement in statements:
+                execute_single_statement(statement, variables)
+    elif isinstance(node, ExecuteNode):
+        if call_stack:
+            func_name = call_stack[-1]
+        else:
+            func_name = "Execute"
+        STRING = node.value
+        for char in STRING:
+            if char in "\t\n":
+                raise RuntimeError("Cannot execute any malicious code")
+        for keyword in ["import", "while", "lambda", "def", "locals()", "globals()"]:
+            if keyword in STRING:
+                raise RuntimeError("Cannot execute any malicious code")
 
-parser = Parser(tokens, code)
-node, error = parser.parse()
+        if call_stack:
+            for key, value in Variables[func_name].items():
+                if isinstance(value, str):
+                    value = f'"{value}"'
+                STRING = STRING.replace(key, str(value))
 
-if error:
-    display_error(error)
-    sys.exit()
 
-execute_node(node)
+        try:
+            eval_result = eval(STRING)
+        except Exception as eval_error:
+            try:
+                exec("execute_input_value = " + STRING)
+                eval_result = locals().get("execute_input_value")
+            except Exception as exec_error:
+                print("Execution error:", exec_error)
+                eval_result = None
+
+        Variables["GLOBALS"][f"{func_name} Return"] = eval_result
+        return eval_result
+    elif isinstance(node, IdentifierNode):
+        value = node.name
+        if value in variables:
+            return variables[value]
+        else:
+            raise NameError(f"'{value}' is not defined")
+    elif isinstance(node, NumberNode):
+        return node.value
+
+def run(fp=source_file):
+    # Read the source file
+    with open(fp, "r") as f:
+        code = f.read()
+
+    # Build parser
+    parser = yacc.yacc()
+
+    if debug_mode:
+        lexer.input(code)
+        for token in lexer:
+            print(token)
+
+    # Parse code and print AST
+    ast = parser.parse(code, lexer=lexer)
+    if debug_mode:
+        print("AST:")
+        print(ast)
+    execute(ast)
+
+run()
