@@ -1,5 +1,7 @@
 # pysharp
 
+#WARNING DON'T EVER USE DEBUG MODE IF YOU ARE USING A FOR LOOP!
+
 use
 ```
 python3 pysharp.py -s main.pysharp
@@ -61,4 +63,35 @@ fn std::rand(minval, maxval){
 
 std::pi = execute("math.pi")
 std::tau = 2 * std::pi
+```
+
+if statements
+
+```
+include stdlib
+
+if std::tau / 2 == std::pi {
+   std::print("Math proven")
+}
+```
+
+for statement
+
+my for statement starts at index 1 and moves up to a range
+
+* my language doesnt support comments at the moment.
+* also while loops
+* list and any iterables
+* doesnt support unary
+* doesnt have dot notation for functions and attributes.
+
+* if it syntax errors, just edit your soucre file until it works
+* i havent really delved deep to error messages
+
+```
+range = 100
+
+for var to range{
+   std::print(var)
+}
 ```
